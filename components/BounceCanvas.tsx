@@ -16,7 +16,7 @@ const TRAIL_LENGTH = 5;
 const MAX_INSTANCES = 20;
 const SPEED = 3.5;
 const FLASH_MS = 100;
-const BG = "#1a1a2e";
+const BG = "#3d0a0a";
 
 type Instance = {
   id: number;
