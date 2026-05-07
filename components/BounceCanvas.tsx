@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 
+// White is dropped from the cycle — invisible on a white background.
+// Navy replaces it for high-contrast pop.
 const COLORS = [
   "#7CB342", // GAIA Green
   "#C5A258", // GAIA Gold
-  "#FFFFFF", // White
+  "#1a1a2e", // Navy (replacing White)
   "#D4513D", // Warm Red
   "#4FC3F7", // Sky Blue
   "#AB47BC", // Soft Violet
@@ -16,7 +18,9 @@ const TRAIL_LENGTH = 5;
 const MAX_INSTANCES = 20;
 const SPEED = 3.5;
 const FLASH_MS = 100;
-const BG = "#3d0a0a";
+const BG = "#FFFFFF";
+const FLASH_RGB = "26, 26, 46"; // navy — visible against white bg
+const LOGO_WIDTH_VW = 0.22;
 
 type Instance = {
   id: number;
@@ -29,17 +33,11 @@ type Instance = {
 };
 
 function randomDirection(): { vx: number; vy: number } {
-  // Random angle in 20°–70° range, then random sign per axis — avoids near-horizontal/vertical loops.
   const deg = 20 + Math.random() * 50;
   const rad = (deg * Math.PI) / 180;
   const sx = Math.random() < 0.5 ? -1 : 1;
   const sy = Math.random() < 0.5 ? -1 : 1;
   return { vx: Math.cos(rad) * SPEED * sx, vy: Math.sin(rad) * SPEED * sy };
-}
-
-function alphaHex(a: number): string {
-  const v = Math.max(0, Math.min(255, Math.round(a * 255)));
-  return v.toString(16).padStart(2, "0");
 }
 
 export default function BounceCanvas() {
@@ -61,182 +59,210 @@ export default function BounceCanvas() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
-
-    const resize = () => {
-      canvas.width = Math.floor(window.innerWidth * dpr);
-      canvas.height = Math.floor(window.innerHeight * dpr);
-      canvas.style.width = `${window.innerWidth}px`;
-      canvas.style.height = `${window.innerHeight}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-    resize();
-
-    const fontSize = () => Math.round(window.innerWidth * 0.08);
-    const fontString = () => `900 ${fontSize()}px var(--font-inter), Inter, system-ui, sans-serif`;
-
-    const measure = () => {
-      ctx.font = fontString();
-      const m = ctx.measureText("GAIA");
-      const ascent = m.actualBoundingBoxAscent ?? fontSize() * 0.75;
-      const descent = m.actualBoundingBoxDescent ?? fontSize() * 0.25;
-      return { width: m.width, height: ascent + descent, ascent };
-    };
-
-    const makeInitial = (): Instance => {
-      const dir = randomDirection();
-      return {
-        id: idCounterRef.current++,
-        x: window.innerWidth / 2,
-        y: window.innerHeight / 2,
-        vx: dir.vx,
-        vy: dir.vy,
-        colorIndex: 0,
-        trail: [],
-      };
-    };
-
-    instancesRef.current = [makeInitial()];
-
-    const playBounce = () => {
-      if (!soundOnRef.current) return;
-      try {
-        if (!audioCtxRef.current) {
-          const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-          audioCtxRef.current = new Ctx();
-        }
-        const ac = audioCtxRef.current;
-        if (!ac) return;
-        if (ac.state === "suspended") ac.resume();
-        const osc = ac.createOscillator();
-        const gain = ac.createGain();
-        osc.type = "sine";
-        osc.frequency.value = 200 + Math.random() * 120;
-        const now = ac.currentTime;
-        gain.gain.setValueAtTime(0, now);
-        gain.gain.linearRampToValueAtTime(0.15, now + 0.005);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
-        osc.connect(gain).connect(ac.destination);
-        osc.start(now);
-        osc.stop(now + 0.14);
-      } catch {
-        // Audio failures should never break the animation.
-      }
-    };
-
     let raf = 0;
-    const draw = () => {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+    let cancelled = false;
+    let onResize: (() => void) | null = null;
+    let onPointerDown: ((e: PointerEvent) => void) | null = null;
+    let onKey: ((e: KeyboardEvent) => void) | null = null;
 
-      ctx.fillStyle = BG;
-      ctx.fillRect(0, 0, w, h);
+    const setup = (img: HTMLImageElement) => {
+      if (cancelled) return;
 
-      ctx.font = fontString();
-      ctx.textBaseline = "top";
-      const { width: textW, height: textH } = measure();
-
-      for (const inst of instancesRef.current) {
-        inst.trail.push({ x: inst.x, y: inst.y });
-        while (inst.trail.length > TRAIL_LENGTH) inst.trail.shift();
-
-        inst.x += inst.vx;
-        inst.y += inst.vy;
-
-        let bouncedX = false;
-        let bouncedY = false;
-
-        if (inst.x <= 0) {
-          inst.x = 0;
-          inst.vx = Math.abs(inst.vx);
-          bouncedX = true;
-        } else if (inst.x + textW >= w) {
-          inst.x = w - textW;
-          inst.vx = -Math.abs(inst.vx);
-          bouncedX = true;
-        }
-
-        if (inst.y <= 0) {
-          inst.y = 0;
-          inst.vy = Math.abs(inst.vy);
-          bouncedY = true;
-        } else if (inst.y + textH >= h) {
-          inst.y = h - textH;
-          inst.vy = -Math.abs(inst.vy);
-          bouncedY = true;
-        }
-
-        if (bouncedX || bouncedY) {
-          inst.colorIndex = (inst.colorIndex + 1) % COLORS.length;
-          playBounce();
-        }
-        if (bouncedX && bouncedY) {
-          flashUntilRef.current = performance.now() + FLASH_MS;
-        }
-
-        const color = COLORS[inst.colorIndex];
-        for (let i = 0; i < inst.trail.length; i++) {
-          const p = inst.trail[i];
-          const a = ((i + 1) / (inst.trail.length + 2)) * 0.35;
-          ctx.fillStyle = color + alphaHex(a);
-          ctx.fillText("GAIA", p.x, p.y);
-        }
-        ctx.fillStyle = color;
-        ctx.fillText("GAIA", inst.x, inst.y);
+      // Pre-tint the logo for each palette color via source-in compositing.
+      // Cached so per-frame draws are just drawImage calls.
+      const tintedCache = new Map<string, HTMLCanvasElement>();
+      for (const color of COLORS) {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const cctx = c.getContext("2d");
+        if (!cctx) continue;
+        cctx.drawImage(img, 0, 0);
+        cctx.globalCompositeOperation = "source-in";
+        cctx.fillStyle = color;
+        cctx.fillRect(0, 0, c.width, c.height);
+        tintedCache.set(color, c);
       }
 
-      const now = performance.now();
-      if (flashUntilRef.current > now) {
-        const remaining = flashUntilRef.current - now;
-        const alpha = remaining / FLASH_MS;
-        ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-        ctx.fillRect(0, 0, w, h);
-      }
+      const dpr = window.devicePixelRatio || 1;
 
+      const resize = () => {
+        canvas.width = Math.floor(window.innerWidth * dpr);
+        canvas.height = Math.floor(window.innerHeight * dpr);
+        canvas.style.width = `${window.innerWidth}px`;
+        canvas.style.height = `${window.innerHeight}px`;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      };
+      resize();
+
+      const dims = () => {
+        const w = window.innerWidth * LOGO_WIDTH_VW;
+        const h = w * (img.naturalHeight / img.naturalWidth);
+        return { w, h };
+      };
+
+      const makeInitial = (): Instance => {
+        const dir = randomDirection();
+        const { w, h } = dims();
+        return {
+          id: idCounterRef.current++,
+          x: window.innerWidth / 2 - w / 2,
+          y: window.innerHeight / 2 - h / 2,
+          vx: dir.vx,
+          vy: dir.vy,
+          colorIndex: 0,
+          trail: [],
+        };
+      };
+
+      instancesRef.current = [makeInitial()];
+
+      const playBounce = () => {
+        if (!soundOnRef.current) return;
+        try {
+          if (!audioCtxRef.current) {
+            const Ctx =
+              window.AudioContext ||
+              (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+            audioCtxRef.current = new Ctx();
+          }
+          const ac = audioCtxRef.current;
+          if (!ac) return;
+          if (ac.state === "suspended") ac.resume();
+          const osc = ac.createOscillator();
+          const gain = ac.createGain();
+          osc.type = "sine";
+          osc.frequency.value = 200 + Math.random() * 120;
+          const now = ac.currentTime;
+          gain.gain.setValueAtTime(0, now);
+          gain.gain.linearRampToValueAtTime(0.15, now + 0.005);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+          osc.connect(gain).connect(ac.destination);
+          osc.start(now);
+          osc.stop(now + 0.14);
+        } catch {
+          // Audio failures should never break the animation.
+        }
+      };
+
+      const draw = () => {
+        if (cancelled) return;
+        const ww = window.innerWidth;
+        const wh = window.innerHeight;
+
+        ctx.fillStyle = BG;
+        ctx.fillRect(0, 0, ww, wh);
+
+        const { w: lw, h: lh } = dims();
+
+        for (const inst of instancesRef.current) {
+          inst.trail.push({ x: inst.x, y: inst.y });
+          while (inst.trail.length > TRAIL_LENGTH) inst.trail.shift();
+
+          inst.x += inst.vx;
+          inst.y += inst.vy;
+
+          let bouncedX = false;
+          let bouncedY = false;
+          if (inst.x <= 0) {
+            inst.x = 0;
+            inst.vx = Math.abs(inst.vx);
+            bouncedX = true;
+          } else if (inst.x + lw >= ww) {
+            inst.x = ww - lw;
+            inst.vx = -Math.abs(inst.vx);
+            bouncedX = true;
+          }
+          if (inst.y <= 0) {
+            inst.y = 0;
+            inst.vy = Math.abs(inst.vy);
+            bouncedY = true;
+          } else if (inst.y + lh >= wh) {
+            inst.y = wh - lh;
+            inst.vy = -Math.abs(inst.vy);
+            bouncedY = true;
+          }
+
+          if (bouncedX || bouncedY) {
+            inst.colorIndex = (inst.colorIndex + 1) % COLORS.length;
+            playBounce();
+          }
+          if (bouncedX && bouncedY) {
+            flashUntilRef.current = performance.now() + FLASH_MS;
+          }
+
+          const tinted = tintedCache.get(COLORS[inst.colorIndex]);
+          if (!tinted) continue;
+
+          for (let i = 0; i < inst.trail.length; i++) {
+            const p = inst.trail[i];
+            const a = ((i + 1) / (inst.trail.length + 2)) * 0.3;
+            ctx.globalAlpha = a;
+            ctx.drawImage(tinted, p.x, p.y, lw, lh);
+          }
+          ctx.globalAlpha = 1;
+          ctx.drawImage(tinted, inst.x, inst.y, lw, lh);
+        }
+
+        const now = performance.now();
+        if (flashUntilRef.current > now) {
+          const remaining = flashUntilRef.current - now;
+          const alpha = (remaining / FLASH_MS) * 0.5;
+          ctx.fillStyle = `rgba(${FLASH_RGB},${alpha})`;
+          ctx.fillRect(0, 0, ww, wh);
+        }
+
+        raf = requestAnimationFrame(draw);
+      };
       raf = requestAnimationFrame(draw);
-    };
-    raf = requestAnimationFrame(draw);
 
-    const onResize = () => resize();
-    window.addEventListener("resize", onResize);
+      onResize = () => resize();
+      window.addEventListener("resize", onResize);
 
-    const onPointerDown = (e: PointerEvent) => {
-      if (instancesRef.current.length >= MAX_INSTANCES) return;
-      const dir = randomDirection();
-      instancesRef.current.push({
-        id: idCounterRef.current++,
-        x: e.clientX,
-        y: e.clientY,
-        vx: dir.vx,
-        vy: dir.vy,
-        colorIndex: Math.floor(Math.random() * COLORS.length),
-        trail: [],
-      });
-    };
-    window.addEventListener("pointerdown", onPointerDown);
+      onPointerDown = (e: PointerEvent) => {
+        if (instancesRef.current.length >= MAX_INSTANCES) return;
+        const dir = randomDirection();
+        const { w, h } = dims();
+        instancesRef.current.push({
+          id: idCounterRef.current++,
+          x: e.clientX - w / 2,
+          y: e.clientY - h / 2,
+          vx: dir.vx,
+          vy: dir.vy,
+          colorIndex: Math.floor(Math.random() * COLORS.length),
+          trail: [],
+        });
+      };
+      window.addEventListener("pointerdown", onPointerDown);
 
-    const onKey = (e: KeyboardEvent) => {
-      const k = e.key.toLowerCase();
-      if (k === "r") {
-        instancesRef.current = [makeInitial()];
-        flashUntilRef.current = 0;
-      } else if (k === "f") {
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen?.().catch(() => {});
-        } else {
-          document.exitFullscreen?.().catch(() => {});
+      onKey = (e: KeyboardEvent) => {
+        const k = e.key.toLowerCase();
+        if (k === "r") {
+          instancesRef.current = [makeInitial()];
+          flashUntilRef.current = 0;
+        } else if (k === "f") {
+          if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen?.().catch(() => {});
+          } else {
+            document.exitFullscreen?.().catch(() => {});
+          }
+        } else if (k === "s") {
+          setSoundOn((prev) => !prev);
         }
-      } else if (k === "s") {
-        setSoundOn((prev) => !prev);
-      }
+      };
+      window.addEventListener("keydown", onKey);
     };
-    window.addEventListener("keydown", onKey);
+
+    const img = new Image();
+    img.onload = () => setup(img);
+    img.src = "/gaia-logo.png";
 
     return () => {
+      cancelled = true;
       cancelAnimationFrame(raf);
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKey);
+      if (onResize) window.removeEventListener("resize", onResize);
+      if (onPointerDown) window.removeEventListener("pointerdown", onPointerDown);
+      if (onKey) window.removeEventListener("keydown", onKey);
     };
   }, []);
 
