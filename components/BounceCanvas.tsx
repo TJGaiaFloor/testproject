@@ -22,6 +22,12 @@ const BG = "#FFFFFF";
 const FLASH_RGB = "26, 26, 46"; // navy — visible against white bg
 const LOGO_WIDTH_VW = 0.22;
 
+const SPROUT_HEIGHT_PX = 90;
+const SPROUT_GROW_MS = 350;
+const SPROUT_HOLD_MS = 1400;
+const SPROUT_FADE_MS = 600;
+const SPROUT_TOTAL_MS = SPROUT_GROW_MS + SPROUT_HOLD_MS + SPROUT_FADE_MS;
+
 type Instance = {
   id: number;
   x: number;
@@ -30,6 +36,13 @@ type Instance = {
   vy: number;
   colorIndex: number;
   trail: { x: number; y: number }[];
+};
+
+type Sprout = {
+  x: number;
+  y: number;
+  rotation: number; // 0=grows up, π=down, π/2=right (off left wall), -π/2=left (off right wall)
+  startTime: number;
 };
 
 function randomDirection(): { vx: number; vy: number } {
@@ -43,6 +56,7 @@ function randomDirection(): { vx: number; vy: number } {
 export default function BounceCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const instancesRef = useRef<Instance[]>([]);
+  const sproutsRef = useRef<Sprout[]>([]);
   const flashUntilRef = useRef(0);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const soundOnRef = useRef(false);
@@ -65,8 +79,9 @@ export default function BounceCanvas() {
     let onPointerDown: ((e: PointerEvent) => void) | null = null;
     let onKey: ((e: KeyboardEvent) => void) | null = null;
 
-    const setup = (img: HTMLImageElement) => {
+    const setup = (img: HTMLImageElement, sprout: HTMLImageElement) => {
       if (cancelled) return;
+      const sproutAspect = sprout.naturalWidth / sprout.naturalHeight;
 
       // Pre-tint the logo for each palette color via source-in compositing.
       // Cached so per-frame draws are just drawImage calls.
@@ -153,6 +168,35 @@ export default function BounceCanvas() {
         ctx.fillStyle = BG;
         ctx.fillRect(0, 0, ww, wh);
 
+        const tNowFrame = performance.now();
+        const sproutH = SPROUT_HEIGHT_PX;
+        const sproutW = sproutH * sproutAspect;
+        for (let i = sproutsRef.current.length - 1; i >= 0; i--) {
+          const s = sproutsRef.current[i];
+          const elapsed = tNowFrame - s.startTime;
+          if (elapsed >= SPROUT_TOTAL_MS) {
+            sproutsRef.current.splice(i, 1);
+            continue;
+          }
+          let scale = 1;
+          let alpha = 1;
+          if (elapsed < SPROUT_GROW_MS) {
+            const t = elapsed / SPROUT_GROW_MS;
+            scale = 1 - Math.pow(1 - t, 3);
+          } else if (elapsed > SPROUT_GROW_MS + SPROUT_HOLD_MS) {
+            const t = (elapsed - SPROUT_GROW_MS - SPROUT_HOLD_MS) / SPROUT_FADE_MS;
+            alpha = 1 - t;
+          }
+          ctx.save();
+          ctx.translate(s.x, s.y);
+          ctx.rotate(s.rotation);
+          ctx.scale(scale, scale);
+          ctx.globalAlpha = alpha;
+          ctx.drawImage(sprout, -sproutW / 2, -sproutH, sproutW, sproutH);
+          ctx.restore();
+        }
+        ctx.globalAlpha = 1;
+
         const { w: lw, h: lh } = dims();
 
         for (const inst of instancesRef.current) {
@@ -187,8 +231,27 @@ export default function BounceCanvas() {
             inst.colorIndex = (inst.colorIndex + 1) % COLORS.length;
             playBounce();
           }
+          const tNow = performance.now();
+          if (bouncedX) {
+            const onLeft = inst.x === 0;
+            sproutsRef.current.push({
+              x: onLeft ? 0 : ww,
+              y: inst.y + lh / 2,
+              rotation: onLeft ? Math.PI / 2 : -Math.PI / 2,
+              startTime: tNow,
+            });
+          }
+          if (bouncedY) {
+            const onTop = inst.y === 0;
+            sproutsRef.current.push({
+              x: inst.x + lw / 2,
+              y: onTop ? 0 : wh,
+              rotation: onTop ? Math.PI : 0,
+              startTime: tNow,
+            });
+          }
           if (bouncedX && bouncedY) {
-            flashUntilRef.current = performance.now() + FLASH_MS;
+            flashUntilRef.current = tNow + FLASH_MS;
           }
 
           const tinted = tintedCache.get(COLORS[inst.colorIndex]);
@@ -239,6 +302,7 @@ export default function BounceCanvas() {
         const k = e.key.toLowerCase();
         if (k === "r") {
           instancesRef.current = [makeInitial()];
+          sproutsRef.current = [];
           flashUntilRef.current = 0;
         } else if (k === "f") {
           if (!document.fullscreenElement) {
@@ -254,8 +318,22 @@ export default function BounceCanvas() {
     };
 
     const img = new Image();
-    img.onload = () => setup(img);
+    const sprout = new Image();
+    let logoReady = false;
+    let sproutReady = false;
+    const tryStart = () => {
+      if (logoReady && sproutReady) setup(img, sprout);
+    };
+    img.onload = () => {
+      logoReady = true;
+      tryStart();
+    };
+    sprout.onload = () => {
+      sproutReady = true;
+      tryStart();
+    };
     img.src = "/gaia-logo.png";
+    sprout.src = "/sprout.svg";
 
     return () => {
       cancelled = true;
